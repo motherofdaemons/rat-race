@@ -1,5 +1,5 @@
 use color_eyre::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
     style::Stylize,
@@ -15,52 +15,40 @@ fn main() -> color_eyre::Result<()> {
     result
 }
 
-/// The main application which holds the state and logic of the application.
-#[derive(Debug, Default)]
-pub struct App {
-    /// Is the application running?
-    running: bool,
-    /// The text for the user to write.
-    text: String,
-    /// The user input.
-    input: String,
+#[derive(Debug, Default, PartialEq, Eq)]
+enum State {
+    #[default]
+    Start,
+    Running {
+        text: String,
+        input: String,
+    },
+    Done,
+    Exit,
 }
 
-impl App {
-    /// Construct a new instance of [`App`].
-    pub fn new() -> Self {
-        let text = String::from("The quick brown fox jumped over the lazy dog.");
-        Self {
-            running: true,
-            text,
-            ..Default::default()
+impl State {
+    fn update(&mut self, event: Event) -> Result<()> {
+        if let Event::Key(key) = event {
+            self.on_key_event(key)
         }
-    }
-
-    /// Run the application's main loop.
-    pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
-        while self.running {
-            terminal.draw(|frame| self.render(frame))?;
-            self.handle_crossterm_events()?;
-        }
+        self.check_complete();
         Ok(())
     }
 
-    /// Renders the user interface.
-    ///
-    /// This is where you add new widgets. See the following resources for more information:
-    ///
-    /// - <https://docs.rs/ratatui/latest/ratatui/widgets/index.html>
-    /// - <https://github.com/ratatui/ratatui/tree/main/ratatui-widgets/examples>
-    fn render(&mut self, frame: &mut Frame) {
-        let title = Line::from("Ratatui Simple Template")
-            .bold()
-            .blue()
-            .centered();
-        let lines = vec![
-            Line::from(self.text.as_str()),
-            Line::from(self.input.as_str()),
-        ];
+    fn draw(&self, frame: &mut Frame) {
+        let title = Line::from("Rat Race").bold().blue().centered();
+        let lines = match self {
+            State::Start => vec![Line::from("Press 's' to start the test")],
+            State::Running { text, input } => {
+                vec![Line::from(text.as_str()), Line::from(input.as_str())]
+            }
+            State::Done => vec![
+                Line::from("Done!"),
+                Line::from("Press 's' to restart the test"),
+            ],
+            State::Exit => vec![],
+        };
         let text = Text::from(lines);
         let p = Paragraph::new(text);
         frame.render_widget(
@@ -69,39 +57,85 @@ impl App {
         )
     }
 
-    /// Reads the crossterm events and updates the state of [`App`].
-    ///
-    /// If your application needs to perform work in between handling events, you can use the
-    /// [`event::poll`] function to check if there are any events available with a timeout.
-    fn handle_crossterm_events(&mut self) -> Result<()> {
-        match event::read()? {
-            // it's important to check KeyEventKind::Press to avoid handling key release events
-            Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key_event(key),
-            Event::Mouse(_) => {}
-            Event::Resize(_, _) => {}
-            _ => {}
-        }
-        Ok(())
-    }
-
     /// Handles the key events and updates the state of [`App`].
     fn on_key_event(&mut self, key: KeyEvent) {
+        // Always handle possible quit events.
         match (key.modifiers, key.code) {
             (_, KeyCode::Esc)
             | (KeyModifiers::CONTROL, KeyCode::Char('c') | KeyCode::Char('C')) => self.quit(),
-            // Add other key handlers here.
-            (_, KeyCode::Char(ch)) => self.append_char(ch),
-            // TODO: support backspace
             _ => {}
+        }
+
+        // Fall back to individual state handlers.
+        match self {
+            State::Start | State::Done => {
+                if let KeyCode::Char('s') = key.code {
+                    *self = Self::Running {
+                        text: String::from("The quick brown fox jumped over the lazy dog."),
+                        input: String::new(),
+                    }
+                }
+            }
+            State::Running { .. } => match key.code {
+                KeyCode::Backspace => {
+                    self.pop_char();
+                }
+                KeyCode::Char(ch) => self.append_char(ch),
+                _ => {}
+            },
+            State::Exit => todo!(),
         }
     }
 
     /// Set running to false to quit the application.
     fn quit(&mut self) {
-        self.running = false;
+        *self = State::Exit;
     }
 
     fn append_char(&mut self, ch: char) {
-        self.input.push(ch);
+        match self {
+            State::Running { input, .. } => input.push(ch),
+            _ => unreachable!(),
+        }
+    }
+
+    fn pop_char(&mut self) -> Option<char> {
+        match self {
+            State::Running { input, .. } => input.pop(),
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_complete(&mut self) {
+        if let State::Running { text, input } = self {
+            if text == input {
+                *self = State::Done;
+            }
+        }
+    }
+}
+
+/// The main application which holds the state and logic of the application.
+#[derive(Debug, Default)]
+pub struct App {
+    /// Is the application running?
+    state: State,
+}
+
+impl App {
+    /// Construct a new instance of [`App`].
+    pub fn new() -> Self {
+        Self {
+            ..Default::default()
+        }
+    }
+
+    /// Run the application's main loop.
+    pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        while self.state != State::Exit {
+            terminal.draw(|frame| self.state.draw(frame))?;
+            self.state.update(event::read()?)?;
+        }
+        Ok(())
     }
 }
